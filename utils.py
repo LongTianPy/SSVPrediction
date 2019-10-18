@@ -14,27 +14,39 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set(color_codes=True)
 
+
 ### VARIABLES
-# matrix5 = load_matrix5()
-# matrix3 = load_matrix3()
+matrix5 = load_matrix5()
+matrix3 = load_matrix3()
 genome_file = 'hg19.fa'
 
 ### FUNCTIONS
 def get_mysql_sqlalchemy_engine_obj(conf_file='~/.my.cnf', **kwargs):
-    engine = create_engine('mysql+pymysql://',
+    engine =  create_engine('mysql+pymysql://',
                         creator=lambda: pymysql.connect(
                                             read_default_file=conf_file,
                                             charset='utf8',
                                             local_infile=True, db='var_SPss'
                                             )
                     )
-    return engine
+    return engine.connect()
 
-def create_ss_pairs_by_window_size(line,fa,window_size,handler):
+def process_line(line,fa):
     [chrom, pos, ref, alt] = line[:4]
     chrom = 'chr' + str(chrom).upper()
     pos = int(pos)
+    return "|".join([chrom, str(pos), ref, alt])
+
+def create_ss_pairs_by_window_size(line,fa,window_size,handler):
+    chromposrefalt = process_line(line,fa)
+    [chrom, pos, ref, alt] = chromposrefalt.split('|')
+    chrom = str(chrom)
+    pos = int(pos)
     pairs = []
+    if ref == '-':
+        ref = ''
+    if alt == '-':
+        alt = ''
     for i in range(window_size):
         ref_seq = fa[chrom][pos - 1 - i:pos - 1 + window_size - i].seq
         if len(ref) == len(alt):
@@ -43,88 +55,20 @@ def create_ss_pairs_by_window_size(line,fa,window_size,handler):
         else:
             if len(ref) > len(alt):
                 alt_seq = fa[chrom][pos - 1 - i:pos - 1 + window_size - i + len(ref) - len(alt)].seq
-                alt_seq = alt_seq[:i] + alt + alt_seq[i  + len(ref):]
+                alt_seq = alt_seq[:i] + alt + alt_seq[i + len(ref):]
             else:
                 alt_seq = ref_seq
-                alt_seq = alt_seq[:i] + alt + alt_seq[i + 1:]
+                alt_seq = alt_seq[:i] + alt + alt_seq[i + len(ref):]
                 alt_seq = alt_seq[:window_size]
         # pairs.append([ref_seq, alt_seq])
-        handler.write('{0}\t{1}\n'.format('\t'.join(line[:4]),'\t'.join([ref_seq,alt_seq])))
+        handler.write('{0}\t{1}\n'.format(chromposrefalt,'\t'.join([ref_seq,alt_seq])))
 
-
-def check_var_SPss_5ss(pairs,engine):
-    idx = []
-    scores = []
-    for pair in pairs:
-        for i in pair:
-            idx.append(i)
-    df = pd.DataFrame(columns=['tendency-ratio'],index=idx)
-    df.index.name='element'
-    sql = "select element,`tendency-ratio` from score_9 where element in ({0})".format(','.join(["'"+i+"'" for i in idx]))
-    from_db = pd.read_sql(sql,engine,index_col='element')
-    merged = pd.merge(df,from_db,how='left',on='element')
-    merged.fillna(-1,inplace=True)
-    for i in pairs:
-        if i[0][3:5]!='GT' and i[1][3:5]!='GT':
-            scores.append(float(merged.loc[i[1],'tendency-ratio_y'])-float(merged.loc[i[0],'tendency-ratio_y']))
-        else:
-            scores.append(0)
-    return scores
-
-def check_var_SPss_3ss(pairs,engine):
-    idx = []
-    scores = []
-    for pair in pairs:
-        for i in pair:
-            idx.append(i)
-    df = pd.DataFrame(columns=['tendency-ratio'],index=idx)
-    df.index.name='element'
-    sql = "select element,`tendency-ratio` from score_16 where element in ({0})".format(','.join(["'"+i+"'" for i in idx]))
-    from_db = pd.read_sql(sql,engine,index_col='element')
-    merged = pd.merge(df,from_db,how='left',on='element')
-    merged.fillna(-1,inplace=True)
-    for i in pairs:
-        if i[0][11:13]!='AG' and i[1][11:13]!='AG':
-            scores.append(float(merged.loc[i[1],'tendency-ratio_y'])-float(merged.loc[i[0],'tendency-ratio_y']))
-        else:
-            scores.append(0)
-    return scores
-
-def check_MaxEntScan_5ss(pairs):
-    scores = []
-    for i in pairs:
-        score = [0,0]
-        [ref, alt] = i
-        score[0] = maxent_fast.score5(ref,matrix=matrix5)
-        score[1] = maxent_fast.score5(alt,matrix=matrix5)
-        scores.append(score[1]-score[0])
-    return scores
-
-def check_MaxEntScan_3ss(pairs):
-    scores = []
-    for i in pairs:
-        score = [0,0]
-        [ref, alt] = i
-        score[0] = maxent_fast.score3(ref,matrix=matrix3)
-        score[1] = maxent_fast.score3(alt,matrix=matrix3)
-        scores.append(score[1]-score[0])
-    return scores
-
-def SSP(file):
+def create_potential_ss(inputfile):
     fa = Fasta(genome_file)
-    # engine = get_mysql_sqlalchemy_engine_obj()
-    # conn = engine.connect()
-    delta_5ss_var_SPss = []
-    delta_3ss_var_SPss = []
-    delta_5ss_maxentscan = []
-    delta_3ss_maxentscan = []
-    pairs_5ss_var_SPss_all = []
-    pairs_3ss_var_SPss_all = []
-    pairs_3ss_for_maxentscan_all = []
-    out_5ss = open('5ss.txt','w')
-    out_3ss_var_Spss = open('3ss_var_Spss.txt','w')
-    out_3ss_maxentscan = open('3ss_MaxEntScan.txt','w')
-    with open(file, 'r') as f:
+    out_5ss = open('5ss.txt', 'w')
+    out_3ss_var_Spss = open('3ss_var_Spss.txt', 'w')
+    out_3ss_maxentscan = open('3ss_MaxEntScan.txt', 'w')
+    with open(inputfile, 'r') as f:
         line = f.readline()
         while line:
             line = f.readline().strip().split('\t')
@@ -140,23 +84,32 @@ def SSP(file):
     with open('5ss.txt','r') as f:
         lines = [i.strip().split('\t') for i in f.readlines()]
     with open('5ss_seq.txt','w') as f:
+        pool = {}
         for line in lines:
-            for i in line:
-                f.write('{0}\n'.format(i))
-    shutil.copy('5ss_seq.txt','/Users/longtian/Desktop/MaxEntScan')
-    with open('3ss_var_Spss.txt','r') as f:
+            for i in line[1:]:
+                if i not in pool:
+                    pool[i] = 1
+                    f.write('{0}\n'.format(i))
+    with open('3ss_var_Spss.txt', 'r') as f:
         lines = [i.strip().split('\t') for i in f.readlines()]
-    with open('3ss_var_Spss_seq.txt','w') as f:
+    with open('3ss_var_Spss_seq.txt', 'w') as f:
+        pool = {}
         for line in lines:
-            for i in line:
-                f.write('{0}\n'.format(i))
-    with open('3ss_MaxEntScan.txt','r') as f:
+            for i in line[1:]:
+                if i not in pool:
+                    pool[i] = 1
+                    f.write('{0}\n'.format(i))
+    with open('3ss_MaxEntScan.txt', 'r') as f:
         lines = [i.strip().split('\t') for i in f.readlines()]
-    with open('3ss_MaxEntScan_seq.txt','w') as f:
+    with open('3ss_MaxEntScan_seq.txt', 'w') as f:
+        pool = {}
         for line in lines:
-            for i in line:
-                f.write('{0}\n'.format(i))
-    shutil.copy('3ss_MaxEntScan_seq.txt','/Users/longtian/Desktop/MaxEntScan')
+            for i in line[1:]:
+                if i not in pool:
+                    pool[i] = 1
+                    f.write('{0}\n'.format(i))
+    shutil.copy('5ss_seq.txt', '/Users/longtian/Desktop/MaxEntScan')
+    shutil.copy('3ss_MaxEntScan_seq.txt', '/Users/longtian/Desktop/MaxEntScan')
 
 def run_maxentscan():
     cwd = os.getcwd()
@@ -170,23 +123,26 @@ def run_maxentscan():
 def get_delta_maxentscan():
     with open('5ss.txt','r') as f:
         pairs_5ss = [i.strip().split('\t') for i in f.readlines()]
+    # pairs_5ss = pd.read_csv('5ss.txt',sep='\t',header=None,index_col=0)
     score_5ss = pd.read_csv('score_5ss_MaxEntScan.txt',sep='\t',header=None,index_col=0)
     score_5ss.columns = ['score']
     with open('delta_5ss_maxentscan.txt', 'w') as f:
-        for pair in pairs_5ss:
-            ref = pair[0]
-            alt = pair[1]
-            f.write('{0}\n'.format(float(score_5ss.loc[alt,'score']) - float(score_5ss.loc[ref,'score'])))
+        for i in pairs_5ss:
+            idx = i[0]
+            ref = i[1]
+            alt = i[2]
+            f.write('{0}\t{1}\n'.format(i,float(score_5ss.loc[alt,'score']) - float(score_5ss.loc[ref,'score'])))
     with open('3ss_MaxEntScan.txt','r') as f:
         pairs_3ss = [i.strip().split('\t') for i in f.readlines()]
+    # pairs_3ss = pd.read_csv('3ss_MaxEntScan.txt', sep='\t', header=None, index_col=0)
     score_3ss = pd.read_csv('score_3ss_MaxEntScan.txt',sep='\t',header=None,index_col=0)
     score_3ss.columns = ['score']
     with open('delta_3ss_maxentscan.txt', 'w') as f:
-        for pair in pairs_3ss:
-            ref = pair[0]
-            alt = pair[1]
-            f.write('{0}\n'.format(float(score_3ss.loc[alt,'score']) - float(score_3ss.loc[ref,'score'])))
-
+        for i in pairs_3ss:
+            idx = i[0]
+            ref = i[1]
+            alt = i[2]
+            f.write('{0}\t{1}\n'.format(i,float(score_3ss.loc[alt,'score']) - float(score_3ss.loc[ref,'score'])))
 
 def query_var_SPss():
     engine = get_mysql_sqlalchemy_engine_obj()
@@ -203,9 +159,11 @@ def query_var_SPss():
     merged_5ss = pd.merge(df_5ss,from_db_5ss,how='left',on='element')
     merged_5ss.fillna(-1,inplace=True)
     scores_5ss = []
-    for i in pairs_5ss:
-        if i[0][3:5]=='GT' and i[1][3:5]=='GT':
-            scores_5ss.append(float(merged_5ss.loc[i[1],'tendency-ratio_y'])-float(merged_5ss.loc[i[0],'tendency-ratio_y']))
+    with open('delta_5ss_var_Spss.txt', 'w') as f:
+        for i in pairs_5ss:
+            if i[1][3:5]=='GT' and i[2][3:5]=='GT':
+                delta = float(merged_5ss.loc[i[2],'tendency-ratio_y'])-float(merged_5ss.loc[i[1],'tendency-ratio_y'])
+                f.write(('{0}\t{1}\n'.format(i[0], delta)))
     with open('3ss_var_Spss.txt', 'r') as f:
         pairs_3ss = [i.strip().split('\t') for i in f.readlines()]
     with open('3ss_var_Spss_seq.txt', 'r') as f:
@@ -219,15 +177,20 @@ def query_var_SPss():
     merged_3ss = pd.merge(df_3ss, from_db_3ss, how='left', on='element')
     merged_3ss.fillna(-1, inplace=True)
     scores_3ss = []
-    for i in pairs_3ss:
-        if i[0][3:5] == 'GT' and i[1][3:5] == 'GT':
-            scores_3ss.append(float(merged_3ss.loc[i[1], 'tendency-ratio_y']) - float(merged_3ss.loc[i[0], 'tendency-ratio_y']))
-    return scores_5ss, scores_3ss
+    with open('delta_3ss_varspss.txt', 'w') as f:
+        for i in pairs_3ss:
+            if i[1][11:13]=='AG' and i[2][11:13]=='AG':
+                delta = float(merged_3ss.loc[i[2],'tendency-ratio_y'])-float(merged_3ss.loc[i[1],'tendency-ratio_y'])
+                f.write(('{0}\t{1}\n'.format(i[0], delta)))
+
+def main():
+    inputfile = sys.argv[1]
+    create_potential_ss(inputfile)
+    # run_maxentscan()
+    # get_delta_maxentscan()
+    query_var_SPss()
 
 if __name__ == '__main__':
-    SSP('HGMD_current.tsv')
-    # run_maxentscan()
-    score_5ss,score_3ss = query_var_SPss()
-
+    main()
 
 
